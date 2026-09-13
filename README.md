@@ -25,15 +25,6 @@ requirements.txt
 README.md
 ```
 
-## ⚠️ Domain change: NREL → NLR (December 2025)
-
-NREL (National Renewable Energy Laboratory) was renamed the **National
-Laboratory of the Rockies (NLR)** by the US Department of Energy on
-December 1, 2025. The developer portal moved from `developer.nrel.gov`
-to **`developer.nlr.gov`** — API paths are unchanged, only the domain.
-If you're getting a DNS error on the old domain, this is why — use
-the `nlr.gov` links below.
-
 ## Setup
 
 1. Get a free API key from the [NLR Developer Portal](https://developer.nlr.gov/signup/)
@@ -96,6 +87,54 @@ satellite data** for IIT Indore, 2019 (see Results below). This isn't
 a synthetic demo; the numbers below came from an actual API pull and
 an actual model run.
 
+## What's actually being calculated
+
+**1. Solar irradiance → raw power potential.** GHI (Global Horizontal
+Irradiance, in W/m²) is the total solar power hitting one square meter
+of horizontal surface at a given moment — this is the raw input every
+downstream number is built from.
+
+**2. GHI → PV system output (the physics model):**
+```
+PV Output (kW) = GHI × panel_area × num_panels × efficiency × derating_factor / 1000
+```
+Worked example, at the annual-mean GHI of 224.2 W/m² for this system
+(10 panels × 1.6 m² × 18% efficiency × 0.85 derating):
+```
+224.2 × 1.6 × 10 × 0.18 × 0.85 / 1000 ≈ 0.549 kW average instantaneous output
+```
+Summing that across every 10-minute interval in a day, then every day
+in the year, gives the 28,843 kWh annual total in the Results below.
+`derating_factor` (0.85) isn't a physics constant — it's a standard
+industry catch-all for real-world losses a flat GHI→power conversion
+would otherwise ignore: wiring resistance, inverter conversion loss,
+panel soiling, and small mismatches between panels in a string.
+
+**3. Temperature correction (why the same GHI can produce less power
+on a hot day):**
+```
+T_cell = ambient_temperature + (GHI / 800) × 20      # simplified NOCT-style estimate
+efficiency_adjusted = base_efficiency × (1 - 0.004 × (T_cell - 25))
+```
+Panels are rated at Standard Test Conditions (STC), which assumes
+25°C. Real cell temperature runs hotter than ambient air temperature
+under strong sun — the `(GHI/800)×20` term approximates that heating
+effect. Silicon panels lose roughly 0.4% efficiency per °C above 25°C,
+so on a 46°C day with strong sun, cell temperature can exceed 60°C,
+compounding into a real, measurable output loss — 8.8% annually for
+this dataset (see Results).
+
+**4. Daily/annual energy totals.** Instantaneous kW readings are
+resampled and summed per calendar day (kWh = kW integrated over time,
+and at 10-minute intervals summing kW values approximates that
+integral), then summed again across all 365 days for the annual total.
+
+**5. Forecasting future output (Prophet).** The daily energy series is
+fed to Facebook Prophet, which decomposes it into a trend component
+plus a yearly seasonal component, then projects both forward — this is
+what produces the shaded confidence band and the 14-day-ahead forecast
+in the Results below.
+
 ## Results (real data — IIT Indore, 2019)
 
 This pipeline was run end-to-end against real NLR/NREL Himawari satellite
@@ -145,16 +184,6 @@ NREL's Himawari export has a 2-line metadata header, then:
 
 Both the notebook and the dashboard reconstruct a single `Timestamp`
 index from the five date/time columns before doing anything else.
-
-## Physics model
-
-```
-PV Output (kW) = GHI × panel_area × num_panels × efficiency × derating_factor / 1000
-```
-
-A temperature-derated refinement adjusts efficiency downward as
-estimated cell temperature rises above 25°C (standard test
-conditions) — panels lose roughly 0.4% efficiency per °C above that.
 
 ## Known limitations
 
