@@ -19,8 +19,8 @@ Streamlit dashboard for exploring your own data.
 ## Project structure
 
 ```
-Solar_PV_Forecasting.ipynb   -- main notebook: fetch, physics model, Prophet forecast
-app.py                        -- standalone Streamlit dashboard (run separately, see below)
+Solar_PV_Forecasting.py   
+app.py                        
 README.md
 ```
 
