@@ -19,7 +19,7 @@ Streamlit dashboard for exploring your own data.
 ## Project structure
 
 ```
-Solar_PV_Forecasting.py   
+Solar_PV_Forecasting.ipynb   
 app.py                        
 README.md
 ```
