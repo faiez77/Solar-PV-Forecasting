@@ -5,10 +5,12 @@ Run with: streamlit run app.py
 
 Upload a raw NREL/Himawari-format CSV (Year, Month, Day, Hour, Minute,
 GHI, Temperature columns, with a 2-line metadata header) and this app
-will build the timestamp, run the physics-based PV model, and forecast
-future output with Prophet.
+will build the timestamp, run the physics-based PV model (flat and,
+if the columns are present, tilt-corrected), and forecast future
+output with Prophet.
 """
 
+import numpy as np
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -18,10 +20,12 @@ st.set_page_config(page_title="Solar PV Forecasting", layout="centered")
 st.title("Solar PV Forecasting Dashboard")
 
 st.markdown("""
-Upload a raw NREL Himawari-format CSV (with `Year`, `Month`, `Day`,
+Upload a raw NREL/NLR Himawari-format CSV (with `Year`, `Month`, `Day`,
 `Hour`, `Minute`, `GHI`, `Temperature` columns). This app will:
 - Reconstruct the timestamp index
-- Run a physics-based PV output model
+- Run a physics-based PV output model (flat panel)
+- If `DNI`, `DHI`, and `Surface Albedo` are present, also compute a
+  **tilt-corrected** estimate (tilted at your latitude)
 - Forecast future output using Prophet
 - Visualize actual vs. predicted output
 """)
@@ -29,10 +33,6 @@ Upload a raw NREL Himawari-format CSV (with `Year`, `Month`, `Day`,
 uploaded_file = st.file_uploader("Upload your NREL/Himawari CSV file", type=["csv"])
 
 if uploaded_file:
-    # The real NREL Himawari export has a 2-line metadata header before
-    # the actual column headers -- skip it the same way the analysis
-    # notebook does. If a differently-formatted file is uploaded this
-    # will raise a clear error rather than silently misreading columns.
     try:
         df = pd.read_csv(uploaded_file, skiprows=2)
         df['Timestamp'] = pd.to_datetime(dict(
@@ -59,10 +59,74 @@ if uploaded_file:
                           help="Accounts for wiring, inverter, and other real-world losses")
 
     df['PV_output_kw'] = df['GHI'] * area * (efficiency / 100) * derating / 1000
-
     daily_energy = df['PV_output_kw'].resample('D').sum()
+
     st.line_chart(daily_energy)
-    st.caption(f"Estimated total annual output: {daily_energy.sum():,.0f} kWh")
+    st.caption(f"Estimated total annual output (flat panel): {daily_energy.sum():,.0f} kWh")
+
+    # ---------------------------------------------------------------
+    # Tilt correction -- only if the required columns are present.
+    # Uploaded files won't always have DNI/DHI/Surface Albedo (e.g. a
+    # simpler dataset someone else built), so this degrades gracefully
+    # instead of crashing when those columns are missing.
+    # ---------------------------------------------------------------
+    tilt_cols = {'DNI', 'DHI', 'Surface Albedo'}
+    if tilt_cols.issubset(df.columns):
+        st.subheader("Tilt-Corrected Model")
+        latitude = st.number_input(
+            "Site latitude (degrees)", value=22.5297,
+            help="Panel tilt is set to match latitude -- the standard rule of thumb to maximize annual output"
+        )
+        lat_rad = np.radians(latitude)
+        beta = lat_rad  # tilt angle = latitude
+
+        doy = df.index.dayofyear.values
+        decl_rad = np.radians(23.45 * np.sin(np.radians(360 * (284 + doy) / 365)))
+        solar_time = df['Hour'].values + df['Minute'].values / 60
+        hour_angle_rad = np.radians(15 * (solar_time - 12))
+
+        cos_theta = (np.sin(decl_rad) * np.sin(lat_rad - beta) +
+                     np.cos(decl_rad) * np.cos(hour_angle_rad) * np.cos(lat_rad - beta))
+        cos_theta = np.clip(cos_theta, 0, None)
+
+        albedo = np.nan_to_num(df['Surface Albedo'].values, nan=0.2)
+        beam = df['DNI'].values * cos_theta
+        diffuse = df['DHI'].values * (1 + np.cos(beta)) / 2
+        reflected = df['GHI'].values * albedo * (1 - np.cos(beta)) / 2
+        df['POA'] = np.clip(beam + diffuse + reflected, 0, None)
+
+        df['PV_output_kw_tilted'] = df['POA'] * area * (efficiency / 100) * derating / 1000
+        daily_tilted = df['PV_output_kw_tilted'].resample('D').sum()
+
+        gain_pct = (daily_tilted.sum() / daily_energy.sum() - 1) * 100
+        col1, col2 = st.columns(2)
+        col1.metric("Flat panel (annual)", f"{daily_energy.sum():,.0f} kWh")
+        col2.metric("Tilted panel (annual)", f"{daily_tilted.sum():,.0f} kWh", f"{gain_pct:+.1f}%")
+
+        compare_df = pd.DataFrame({'Flat': daily_energy, 'Tilted': daily_tilted})
+        st.line_chart(compare_df)
+
+        monthly = df.groupby(df.index.month)[['GHI', 'POA']].mean()
+        monthly['pct_change'] = (monthly['POA'] / monthly['GHI'] - 1) * 100
+        st.bar_chart(monthly['pct_change'])
+        st.caption("Change in irradiance from tilting, by month (%) -- typically strongly "
+                   "positive in winter and slightly negative at the summer peak near the equator.")
+    else:
+        st.info(
+            "Tilt-corrected model skipped: this file doesn't have the "
+            "`DNI`, `DHI`, and `Surface Albedo` columns needed for it. "
+            "The flat-panel model above still works fine."
+        )
+
+    # ---------------------------------------------------------------
+    # Clear Sky Index -- only if Clearsky GHI is present
+    # ---------------------------------------------------------------
+    if 'Clearsky GHI' in df.columns:
+        st.subheader("Clear Sky Index")
+        csi = (df['GHI'] / df['Clearsky GHI'].replace(0, np.nan)).resample('D').mean()
+        st.line_chart(csi)
+        st.caption(f"Annual mean: {csi.mean():.2f} -- how much of the cloud-free potential "
+                   f"actually reached the ground each day (1.0 = perfectly clear).")
 
     st.subheader("Forecast with Prophet")
     n_days = len(daily_energy)
@@ -77,9 +141,6 @@ if uploaded_file:
     df_prophet.columns = ['ds', 'y']
 
     with st.spinner("Fitting forecast model..."):
-        # Yearly seasonality needs ~2 years of history to estimate
-        # reliably; disable it automatically on shorter uploads rather
-        # than silently producing an unstable fit.
         m = Prophet(yearly_seasonality=(n_days >= 730))
         m.fit(df_prophet)
 
