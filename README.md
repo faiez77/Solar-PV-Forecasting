@@ -127,7 +127,7 @@ Panels are rated at Standard Test Conditions (25°C); real cell
 temperature runs hotter than ambient air under strong sun, and silicon
 panels lose roughly 0.4% efficiency per °C above 25°C.
 
-**4. Tilt (Plane-of-Array irradiance).** Real installations
+**4. Tilt  (Plane-of-Array irradiance).** Real installations
 are tilted, typically at the site's latitude, to maximize annual
 output:
 ```
@@ -220,12 +220,20 @@ development.
 Trained Prophet on **2019 only**, then checked its forecast against
 what **actually happened in 2020** — data it never saw:
 
+*(Note: `weekly_seasonality=False` is set explicitly throughout this
+project — Prophet auto-detects a weekly pattern by default, but solar
+irradiance has no real day-of-week effect. Disabling it materially
+improved this holdout test: MAE dropped from 21.70 to 18.18 kWh and CI
+calibration improved from 14.5% to 23.0%, since the model was no
+longer fitting noise to a pattern that doesn't physically exist.)*
+
+
 | Metric | Value |
 |---|---|
-| MAE | 21.70 kWh |
-| RMSE | 23.67 kWh |
-| MAPE | 26.3% |
-| % of actual 2020 values within Prophet's 80% CI | **14.5%** (should be ~80% if well-calibrated) |
+| MAE | 18.18 kWh |
+| RMSE | 20.24 kWh |
+| MAPE | 22.0% |
+| % of actual 2020 values within Prophet's 80% CI | **23.0%** (should be ~80% if well-calibrated) |
 
 ![Prophet trained on 2019, validated against real 2020](prophet_holdout_2019_2020.png)
 
